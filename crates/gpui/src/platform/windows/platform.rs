@@ -54,7 +54,7 @@ pub(crate) struct WindowsPlatformState {
     menus: Vec<OwnedMenu>,
     dock_menu_actions: Vec<Box<dyn Action>>,
     // NOTE: standard cursor handles don't need to close.
-    pub(crate) current_cursor: HCURSOR,
+    pub(crate) current_cursor: Option<HCURSOR>,
 }
 
 #[derive(Default)]
@@ -130,14 +130,9 @@ impl WindowsPlatform {
     fn redraw_all(&self) {
         for handle in self.raw_window_handles.read().iter() {
             unsafe {
-                RedrawWindow(
-                    *handle,
-                    None,
-                    HRGN::default(),
-                    RDW_INVALIDATE | RDW_UPDATENOW,
-                )
-                .ok()
-                .log_err();
+                RedrawWindow(Some(*handle), None, None, RDW_INVALIDATE | RDW_UPDATENOW)
+                    .ok()
+                    .log_err();
             }
         }
     }
@@ -156,7 +151,7 @@ impl WindowsPlatform {
             .read()
             .iter()
             .for_each(|handle| unsafe {
-                PostMessageW(*handle, message, wparam, lparam).log_err();
+                PostMessageW(Some(*handle), message, wparam, lparam).log_err();
             });
     }
 
@@ -563,11 +558,11 @@ impl Platform for WindowsPlatform {
     fn set_cursor_style(&self, style: CursorStyle) {
         let hcursor = load_cursor(style);
         let mut lock = self.state.borrow_mut();
-        if lock.current_cursor.0 != hcursor.0 {
+        if lock.current_cursor.map(|c| c.0) != hcursor.map(|c| c.0) {
             self.post_message(
                 WM_GPUI_CURSOR_STYLE_CHANGED,
                 WPARAM(0),
-                LPARAM(hcursor.0 as isize),
+                LPARAM(hcursor.map_or(0, |c| c.0 as isize)),
             );
             lock.current_cursor = hcursor;
         }
@@ -620,7 +615,7 @@ impl Platform for WindowsPlatform {
                 CredReadW(
                     PCWSTR::from_raw(target_name.as_ptr()),
                     CRED_TYPE_GENERIC,
-                    0,
+                    None,
                     &mut credentials,
                 )?
             };
@@ -648,7 +643,13 @@ impl Platform for WindowsPlatform {
             .chain(Some(0))
             .collect_vec();
         self.foreground_executor().spawn(async move {
-            unsafe { CredDeleteW(PCWSTR::from_raw(target_name.as_ptr()), CRED_TYPE_GENERIC, 0)? };
+            unsafe {
+                CredDeleteW(
+                    PCWSTR::from_raw(target_name.as_ptr()),
+                    CRED_TYPE_GENERIC,
+                    None,
+                )?
+            };
             Ok(())
         })
     }
@@ -682,7 +683,7 @@ impl Drop for WindowsPlatform {
 pub(crate) struct WindowCreationInfo {
     pub(crate) icon: HICON,
     pub(crate) executor: ForegroundExecutor,
-    pub(crate) current_cursor: HCURSOR,
+    pub(crate) current_cursor: Option<HCURSOR>,
     pub(crate) windows_version: WindowsVersion,
     pub(crate) validation_number: usize,
     pub(crate) main_receiver: flume::Receiver<Runnable>,
@@ -805,7 +806,7 @@ fn load_icon() -> Result<HICON> {
     let module = unsafe { GetModuleHandleW(None).context("unable to get module handle")? };
     let handle = unsafe {
         LoadImageW(
-            module,
+            Some(module.into()),
             windows::core::PCWSTR(1 as _),
             IMAGE_ICON,
             0,
